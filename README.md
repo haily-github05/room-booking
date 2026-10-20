@@ -69,6 +69,34 @@ Khi Phone A tạo booking mới, dữ liệu được lưu vào Firestore. Fires
 
 Để ngăn chặn việc đặt trùng một cách đáng tin cậy, cần bổ sung cơ chế kiểm tra và cập nhật trạng thái phòng một cách nguyên tử, chẳng hạn sử dụng Firestore Transaction hoặc xử lý xác nhận đặt phòng ở phía máy chủ.
 
-## Kết luận
+# LAB 08 – Safe Real-Time Room Booking
 
-Trong Week 7, ứng dụng được bổ sung thông tin tòa nhà, tầng, tên người đặt phòng, bộ lọc tòa nhà và bộ lọc phòng còn trống. Ứng dụng sử dụng Firebase Firestore với `onSnapshot()` để cập nhật dữ liệu phòng và booking theo thời gian thực trên nhiều thiết bị.
+### 1. Time slot mới đã thêm là gì?
+Time slot mới: **15:00-16:00**.
+
+### 2. bookingId của A201 / 15:00-16:00 là gì?
+Booking ID là **`a201_15-00-16-00`**.
+
+### 3. Slot Booked được xác định từ dữ liệu nào?
+Trạng thái `Booked` được xác định từ collection `bookings` trên Firebase Firestore.
+
+### 4. Vì sao disable slot Booked vẫn không thể thay transaction?
+Vì hai người dùng có thể cùng nhìn thấy một khung giờ còn trống trước khi dữ liệu realtime cập nhật.
+
+Disable slot chỉ giúp hạn chế thao tác trên giao diện, còn `runTransaction()` đảm bảo không xảy ra đặt trùng khi nhiều người dùng đặt cùng lúc.
+
+### 5. Two-client test cho kết quả thế nào?
+Kết quả mong đợi khi kiểm thử hai client cùng đặt một phòng và khung giờ:
+
+- Một client đặt phòng thành công.
+- Client còn lại nhận thông báo `Slot already booked.`
+- Cả hai client cập nhật trạng thái `Booked` theo thời gian thực.
+
+### 6. Firestore có bao nhiêu document cho A201 / 15:00-16:00?
+Firestore phải có **duy nhất 1 document** với ID `a201_15-00-16-00` sau khi kiểm thử thành công.
+
+Điều này chứng minh hệ thống ngăn chặn việc đặt trùng phòng và khung giờ.
+
+### 7. runTransaction() và onSnapshot() có vai trò khác nhau thế nào?
+- **`runTransaction()`**: Kiểm tra và ghi dữ liệu an toàn, đảm bảo chỉ một booking được tạo cho cùng phòng và khung giờ.
+- **`onSnapshot()`**: Lắng nghe thay đổi dữ liệu từ Firestore và tự động cập nhật giao diện theo thời gian thực.

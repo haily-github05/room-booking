@@ -11,11 +11,12 @@ import {
 } from "react-native";
 
 import {
-  addDoc,
   collection,
+  doc,
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
 } from "firebase/firestore";
 
@@ -41,12 +42,10 @@ type Booking = {
   createdAt?: unknown;
 };
 
-
-const slots = [
-  "08:00-09:00",
-  "09:00-10:00",
-  "14:00-15:00",
-];
+const slots = ["08:00-09:00", "09:00-10:00", "14:00-15:00", "15:00-16:00"];
+function toSlotKey(slot: string) {
+  return slot.replace(/:/g, "-");
+}
 
 type RoomCardProps = {
   room: Room;
@@ -54,39 +53,24 @@ type RoomCardProps = {
   isSelected: boolean;
 };
 
-function RoomCard({
-  room,
-  onSelect,
-  isSelected,
-}: RoomCardProps) {
+function RoomCard({ room, onSelect, isSelected }: RoomCardProps) {
   return (
-    <View
-      style={[
-        styles.roomCard,
-        isSelected && styles.selectedRoomCard,
-      ]}
-    >
+    <View style={[styles.roomCard, isSelected && styles.selectedRoomCard]}>
       <View style={styles.roomInfo}>
         <Text style={styles.roomName}>{room.name}</Text>
 
-        <Text style={styles.roomDetail}>
-          Building: {room.building}
-        </Text>
+        <Text style={styles.roomDetail}>Building: {room.building}</Text>
 
         <Text style={styles.roomDetail}>
           Floor: {room.floor ?? "Not specified"}
         </Text>
 
-        <Text style={styles.roomDetail}>
-          Capacity: {room.capacity} people
-        </Text>
+        <Text style={styles.roomDetail}>Capacity: {room.capacity} people</Text>
 
         <Text
           style={[
             styles.status,
-            room.available
-              ? styles.available
-              : styles.unavailable,
+            room.available ? styles.available : styles.unavailable,
           ]}
         >
           {room.available ? "Available" : "Unavailable"}
@@ -96,8 +80,7 @@ function RoomCard({
       <Pressable
         style={[
           styles.selectButton,
-          (!room.available || isSelected) &&
-            styles.disabledButton,
+          (!room.available || isSelected) && styles.disabledButton,
         ]}
         disabled={!room.available || isSelected}
         onPress={() => onSelect(room)}
@@ -114,8 +97,7 @@ export default function App() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
 
-  const [selectedRoom, setSelectedRoom] =
-    useState<Room | null>(null);
+  const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
 
   const [selectedSlot, setSelectedSlot] = useState("");
 
@@ -154,18 +136,14 @@ export default function App() {
         setSelectedRoom((currentRoom) => {
           if (!currentRoom) return null;
 
-          return (
-            roomList.find(
-              (room) => room.id === currentRoom.id
-            ) ?? null
-          );
+          return roomList.find((room) => room.id === currentRoom.id) ?? null;
         });
       },
       (error) => {
         console.error("Error loading rooms:", error);
         setErrorMessage("Unable to load rooms from Firebase.");
         setLoadingRooms(false);
-      }
+      },
     );
 
     return unsubscribe;
@@ -174,121 +152,130 @@ export default function App() {
   useEffect(() => {
     const bookingsQuery = query(
       collection(db, "bookings"),
-      orderBy("createdAt", "desc")
+      orderBy("createdAt", "desc"),
     );
 
     const unsubscribe = onSnapshot(
       bookingsQuery,
       (snapshot) => {
-        const bookingList: Booking[] = snapshot.docs.map(
-          (doc) => {
-            const data = doc.data();
+        const bookingList: Booking[] = snapshot.docs.map((doc) => {
+          const data = doc.data();
 
-            return {
-              id: doc.id,
-              roomId: data.roomId ?? "",
-              roomName: data.roomName ?? "Unknown room",
-              building: data.building ?? "N/A",
-              slot: data.slot ?? "",
-              purpose: data.purpose ?? "",
-              bookedBy: data.bookedBy ?? "",
-              createdAt: data.createdAt,
-            };
-          }
-        );
+          return {
+            id: doc.id,
+            roomId: data.roomId ?? "",
+            roomName: data.roomName ?? "Unknown room",
+            building: data.building ?? "N/A",
+            slot: data.slot ?? "",
+            purpose: data.purpose ?? "",
+            bookedBy: data.bookedBy ?? "",
+            createdAt: data.createdAt,
+          };
+        });
 
         setBookings(bookingList);
       },
       (error) => {
         console.error("Error loading bookings:", error);
         setErrorMessage(
-          "Unable to load bookings. Check your Firebase configuration."
+          "Unable to load bookings. Check your Firebase configuration.",
         );
-      }
+      },
     );
 
     return unsubscribe;
   }, []);
 
   const totalRooms = rooms.length;
-  
+
   const visibleRooms = rooms.filter((room) => {
     const matchesBuilding =
-      selectedBuilding === "ALL" ||
-      room.building === selectedBuilding;
+      selectedBuilding === "ALL" || room.building === selectedBuilding;
 
-    const matchesAvailability =
-      !availableOnly || room.available;
+    const matchesAvailability = !availableOnly || room.available;
 
     return matchesBuilding && matchesAvailability;
   });
 
-
-  const availableRooms = rooms.filter(
-    (room) => room.available
-  ).length;
+  const availableRooms = rooms.filter((room) => room.available).length;
 
   const totalBookings = bookings.length;
-
-
-  const handleBookRoom = async () => {
+  const handleClearSelection = () => {
+    setSelectedRoom(null);
+    setSelectedSlot("");
     setMessage("");
     setErrorMessage("");
+  };
+
+  async function handleBookRoom() {
+    setMessage("");
 
     if (!selectedRoom) {
-      setErrorMessage("Please select a room first.");
-      return;
-    }
-
-    if (!selectedRoom.available) {
-      setErrorMessage("This room is currently unavailable.");
+      setMessage("Please select a room.");
       return;
     }
 
     if (!selectedSlot) {
-      setErrorMessage("Please select a time slot.");
+      setMessage("Please select a time slot.");
       return;
     }
 
     if (!purpose.trim()) {
-      setErrorMessage("Please enter the booking purpose.");
+      setMessage("Please enter purpose.");
       return;
     }
+
     if (!bookedBy.trim()) {
-      setErrorMessage("Please enter your name.");
+      setMessage("Please enter your name.");
       return;
     }
+
+    const slotKey = toSlotKey(selectedSlot);
+
+    const bookingId = `${selectedRoom.id}_${slotKey}`;
+
+    const bookingRef = doc(db, "bookings", bookingId);
 
     try {
-      setIsBooking(true);
+      await runTransaction(db, async (transaction) => {
+        const bookingSnap = await transaction.get(bookingRef);
 
-      await addDoc(collection(db, "bookings"), {
-        roomId: selectedRoom.id,
-        roomName: selectedRoom.name,
-        building: selectedRoom.building,
-        slot: selectedSlot,
-        purpose: purpose.trim(),
-        createdAt: serverTimestamp(),
-        bookedBy: bookedBy.trim(),
+        if (bookingSnap.exists()) {
+          throw new Error("SLOT_ALREADY_BOOKED");
+        }
+
+        transaction.set(bookingRef, {
+          roomId: selectedRoom.id,
+
+          roomName: selectedRoom.name,
+
+          building: selectedRoom.building,
+
+          slot: selectedSlot,
+
+          purpose: purpose.trim(),
+
+          bookedBy: bookedBy.trim(),
+
+          createdAt: serverTimestamp(),
+        });
       });
 
-      setMessage(
-        `Successfully booked ${selectedRoom.name} for ${selectedSlot}.`
-      );
+      setMessage("Booking successful.");
 
-      setSelectedRoom(null);
-      setSelectedSlot("");
       setPurpose("");
       setBookedBy("");
     } catch (error) {
-      console.error("Error creating booking:", error);
-      setErrorMessage(
-        "Booking failed. Please check your Firebase connection."
-      );
-    } finally {
-      setIsBooking(false);
+      if (error instanceof Error && error.message === "SLOT_ALREADY_BOOKED") {
+        setMessage("Slot already booked.");
+        return;
+      }
+
+      console.error("Booking transaction failed:", error);
+
+      setMessage("Booking failed. Please try again.");
     }
-  };
+  }
 
   return (
     <ScrollView
@@ -309,23 +296,17 @@ export default function App() {
 
       <View style={styles.statsContainer}>
         <View style={styles.statCard}>
-          <Text style={styles.statNumber}>
-            {totalRooms}
-          </Text>
+          <Text style={styles.statNumber}>{totalRooms}</Text>
           <Text style={styles.statLabel}>Total Rooms</Text>
         </View>
 
         <View style={styles.statCard}>
-          <Text style={styles.statNumber}>
-            {availableRooms}
-          </Text>
+          <Text style={styles.statNumber}>{availableRooms}</Text>
           <Text style={styles.statLabel}>Available</Text>
         </View>
 
         <View style={styles.statCard}>
-          <Text style={styles.statNumber}>
-            {totalBookings}
-          </Text>
+          <Text style={styles.statNumber}>{totalBookings}</Text>
           <Text style={styles.statLabel}>Bookings</Text>
         </View>
       </View>
@@ -333,7 +314,7 @@ export default function App() {
       {/* ROOM LIST */}
 
       <Text style={styles.sectionTitle}>Available Rooms</Text>
-      
+
       <View style={styles.filterContainer}>
         {["ALL", "Block A", "Block B"].map((building) => (
           <Pressable
@@ -341,50 +322,25 @@ export default function App() {
             onPress={() => setSelectedBuilding(building)}
             style={[
               styles.filterButton,
-              selectedBuilding === building &&
-                styles.activeFilterButton,
+              selectedBuilding === building && styles.activeFilterButton,
             ]}
           >
             <Text
               style={[
                 styles.filterText,
-                selectedBuilding === building &&
-                  styles.activeFilterText,
+                selectedBuilding === building && styles.activeFilterText,
               ]}
             >
               {building}
             </Text>
           </Pressable>
         ))}
-
-        <Pressable
-          onPress={() => setAvailableOnly((current) => !current)}
-          style={[
-            styles.filterButton,
-            availableOnly && styles.activeFilterButton,
-          ]}
-        >
-          <Text
-            style={[
-              styles.filterText,
-              availableOnly && styles.activeFilterText,
-            ]}
-          >
-            {availableOnly ? "✓ Available Only" : "Available Only"}
-          </Text>
-        </Pressable>
       </View>
 
-
       {loadingRooms ? (
-        <ActivityIndicator
-          size="large"
-          style={styles.loader}
-        />
+        <ActivityIndicator size="large" style={styles.loader} />
       ) : rooms.length === 0 ? (
-        <Text style={styles.emptyText}>
-          No rooms found in Firebase.
-        </Text>
+        <Text style={styles.emptyText}>No rooms found in Firebase.</Text>
       ) : visibleRooms.length === 0 ? (
         <Text style={styles.emptyText}>
           No rooms match the selected filters.
@@ -404,9 +360,7 @@ export default function App() {
                   setMessage("");
                   setErrorMessage("");
                 }}
-                isSelected={
-                  selectedRoom?.id === item.id
-                }
+                isSelected={selectedRoom?.id === item.id}
               />
             )}
           />
@@ -421,21 +375,23 @@ export default function App() {
         ]}
       >
         <Text
-          style={[
-            styles.filterText,
-            availableOnly && styles.activeFilterText,
-          ]}
+          style={[styles.filterText, availableOnly && styles.activeFilterText]}
         >
           {availableOnly ? "✓ Available Only" : "Available Only"}
         </Text>
       </Pressable>
 
+      {/**/}
+      <Pressable
+        style={styles.clearButton}
+        onPress={handleClearSelection}
+        disabled={isBooking}
+      >
+        <Text style={styles.clearButtonText}>Clear Selection</Text>
+      </Pressable>
 
-      {/* SELECTED ROOM */}
-
-      <Text style={styles.sectionTitle}>
-        Selected Room
-      </Text>
+      {/**/}
+      <Text style={styles.sectionTitle}>Selected Room</Text>
 
       <View style={styles.selectedRoomBox}>
         <Text style={styles.selectedRoomText}>
@@ -445,43 +401,46 @@ export default function App() {
         </Text>
       </View>
 
-      {/* TIME SLOT */}
-
+      {/**/}
       <Text style={styles.sectionTitle}>Time Slot</Text>
 
       <View style={styles.slotsContainer}>
-        {slots.map((slot) => (
-          <Pressable
-            key={slot}
-            onPress={() => {
-              setSelectedSlot(slot);
-              setMessage("");
-              setErrorMessage("");
-            }}
-            style={[
-              styles.slotButton,
-              selectedSlot === slot &&
-                styles.selectedSlotButton,
-            ]}
-          >
-            <Text
+        {slots.map((slot) => {
+          const isBooked = bookings.some(
+            (booking) =>
+              booking.roomId === selectedRoom?.id && booking.slot === slot,
+          );
+
+          return (
+            <Pressable
+              key={slot}
+              disabled={isBooked || !selectedRoom}
+              onPress={() => {
+                setSelectedSlot(slot);
+                setMessage("");
+                setErrorMessage("");
+              }}
               style={[
-                styles.slotText,
-                selectedSlot === slot &&
-                  styles.selectedSlotText,
+                styles.slotButton,
+                selectedSlot === slot && !isBooked && styles.selectedSlotButton,
+                isBooked && styles.bookedSlotButton,
               ]}
             >
-              {slot}
-            </Text>
-          </Pressable>
-        ))}
+              <Text
+                style={[
+                  styles.slotText,
+                  selectedSlot === slot && !isBooked && styles.selectedSlotText,
+                  isBooked && styles.bookedSlotText,
+                ]}
+              >
+                {isBooked ? `${slot} - Booked` : slot}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
-      {/* PURPOSE */}
-
-      <Text style={styles.sectionTitle}>
-        Booking Purpose
-      </Text>
+      <Text style={styles.sectionTitle}>Booking Purpose</Text>
 
       <TextInput
         style={styles.input}
@@ -495,9 +454,7 @@ export default function App() {
         textAlignVertical="top"
       />
 
-      <Text style={styles.sectionTitle}>
-        Booked By
-      </Text>
+      <Text style={styles.sectionTitle}>Booked By</Text>
 
       <TextInput
         style={styles.input}
@@ -506,14 +463,10 @@ export default function App() {
         placeholder="Your name"
       />
 
-
-      {/* BOOK BUTTON */}
+      {/**/}
 
       <Pressable
-        style={[
-          styles.bookButton,
-          isBooking && styles.disabledButton,
-        ]}
+        style={[styles.bookButton, isBooking && styles.disabledButton]}
         onPress={handleBookRoom}
         disabled={isBooking}
       >
@@ -525,45 +478,28 @@ export default function App() {
       {/* MESSAGES */}
 
       {errorMessage !== "" && (
-        <Text style={styles.errorMessage}>
-          {errorMessage}
-        </Text>
+        <Text style={styles.errorMessage}>{errorMessage}</Text>
       )}
 
-      {message !== "" && (
-        <Text style={styles.successMessage}>
-          {message}
-        </Text>
-      )}
+      {message !== "" && <Text style={styles.successMessage}>{message}</Text>}
 
       {/* RECENT BOOKINGS */}
 
-      <Text style={styles.sectionTitle}>
-        Recent Bookings
-      </Text>
+      <Text style={styles.sectionTitle}>Recent Bookings</Text>
 
       {bookings.length === 0 ? (
-        <Text style={styles.emptyText}>
-          No bookings yet.
-        </Text>
+        <Text style={styles.emptyText}>No bookings yet.</Text>
       ) : (
         <View style={styles.bookingsContainer}>
           {bookings.map((booking) => (
-            <View
-              key={booking.id}
-              style={styles.bookingCard}
-            >
-              <Text style={styles.bookingRoom}>
-                {booking.roomName}
-              </Text>
+            <View key={booking.id} style={styles.bookingCard}>
+              <Text style={styles.bookingRoom}>{booking.roomName}</Text>
 
               <Text style={styles.bookingDetail}>
                 Building: {booking.building}
               </Text>
 
-              <Text style={styles.bookingDetail}>
-                Time: {booking.slot}
-              </Text>
+              <Text style={styles.bookingDetail}>Time: {booking.slot}</Text>
 
               <Text style={styles.bookingDetail}>
                 Purpose: {booking.purpose}
@@ -844,6 +780,7 @@ const styles = StyleSheet.create({
   },
   filterContainer: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
     marginBottom: 12,
   },
@@ -868,5 +805,33 @@ const styles = StyleSheet.create({
 
   activeFilterText: {
     color: "#FFFFFF",
+  },
+  bookedSlotButton: {
+    backgroundColor: "#FEE2E2",
+    borderColor: "#EF4444",
+    opacity: 0.7,
+  },
+
+  bookedSlotText: {
+    color: "#DC2626",
+    fontWeight: "bold",
+  },
+
+  clearButton: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#DC2626",
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 8,
+    alignItems: "center",
+    marginTop: 10,
+    marginBottom: 8,
+  },
+
+  clearButtonText: {
+    color: "#DC2626",
+    fontSize: 14,
+    fontWeight: "bold",
   },
 });
